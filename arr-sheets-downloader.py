@@ -15,16 +15,18 @@ with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'env.toml'), 
     config = tomllib.load(f)
     
 GOOGLE_SHEETS_API_KEY = config['google']['api_key']
-RADARR_API_KEY = config['radarr']['api_key']
-SONARR_API_KEY = config['sonarr']['api_key']
-RADARR_URL = config['radarr']['url']
-SONARR_URL = config['sonarr']['url']
-RADARR_QUALITY_PROFILE = config['radarr']['quality_profile']
-SONARR_QUALITY_PROFILE = config['sonarr']['quality_profile']
-RADARR_ROOT_FOLDER_PATH = config['radarr']['root_folder_path']
-SONARR_ROOT_FOLDER_PATH = config['sonarr']['root_folder_path']
 SPREADSHEET_ID = config['google']['spreadsheet_id']
 RANGE_NAME = config['google']['spreadsheet_range']
+
+RADARR_API_KEY = config['radarr']['api_key']
+RADARR_URL = config['radarr']['url']
+RADARR_QUALITY_PROFILE = config['radarr']['quality_profile']
+RADARR_ROOT_FOLDER_PATH = config['radarr']['root_folder_path']
+
+SONARR_API_KEY = config['sonarr']['api_key']
+SONARR_URL = config['sonarr']['url']
+SONARR_QUALITY_PROFILE = config['sonarr']['quality_profile']
+SONARR_ROOT_FOLDER_PATH = config['sonarr']['root_folder_path']
 
 # Initialize Google Sheets API
 def get_google_sheets_data():
