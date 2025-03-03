@@ -98,7 +98,6 @@ def add_to_sonarr(tmdb_id):
 
 # Main function
 def main():
-    return
     links = get_google_sheets_data()
     for link in links:
         if link:
