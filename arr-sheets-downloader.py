@@ -19,7 +19,11 @@ from googleapiclient.errors import HttpError
 
 
 # Configuration
-with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'env.toml'), 'rb') as f:
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_config_path = os.path.join(_script_dir, 'env.toml')
+if not os.path.exists(_config_path):
+    raise FileNotFoundError("env.toml not found. Copy env.example.toml to env.toml and fill in your values.")
+with open(_config_path, 'rb') as f:
     config = tomllib.load(f)
 
 GOOGLE_SHEETS_API_KEY = config['google'].get('api_key')
