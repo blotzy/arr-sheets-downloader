@@ -13,7 +13,7 @@ import os
 import tomllib
 
 import requests
-import google.auth
+from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
@@ -21,8 +21,9 @@ from googleapiclient.errors import HttpError
 # Configuration
 with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'env.toml'), 'rb') as f:
     config = tomllib.load(f)
-    
-GOOGLE_SHEETS_API_KEY = config['google']['api_key']
+
+GOOGLE_SHEETS_API_KEY = config['google'].get('api_key')
+GOOGLE_SERVICE_ACCOUNT_FILE = config['google'].get('service_account_file')
 SPREADSHEET_ID = config['google']['spreadsheet_id']
 RANGE_NAME = config['google']['spreadsheet_range']
 
@@ -39,7 +40,15 @@ SONARR_ROOT_FOLDER_PATH = config['sonarr']['root_folder_path']
 # Initialize Google Sheets API
 def get_google_sheets_data():
     try:
-        service = build('sheets', 'v4', developerKey=GOOGLE_SHEETS_API_KEY)
+        if GOOGLE_SERVICE_ACCOUNT_FILE:
+            scopes = ['https://www.googleapis.com/auth/spreadsheets.readonly']
+            credentials = service_account.Credentials.from_service_account_file(
+                GOOGLE_SERVICE_ACCOUNT_FILE, scopes=scopes)
+            service = build('sheets', 'v4', credentials=credentials)
+        elif GOOGLE_SHEETS_API_KEY:
+            service = build('sheets', 'v4', developerKey=GOOGLE_SHEETS_API_KEY)
+        else:
+            raise ValueError("No Google auth configured: set api_key or service_account_file in env.toml")
         sheet = service.spreadsheets()
         result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range=RANGE_NAME).execute()
         values = result.get('values', [])
