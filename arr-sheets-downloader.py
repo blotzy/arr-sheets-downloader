@@ -41,6 +41,12 @@ SONARR_URL = config['sonarr']['url']
 SONARR_QUALITY_PROFILE = config['sonarr']['quality_profile']
 SONARR_ROOT_FOLDER_PATH = config['sonarr']['root_folder_path']
 
+radarr_session = requests.Session()
+radarr_session.headers.update({'X-Api-Key': RADARR_API_KEY})
+
+sonarr_session = requests.Session()
+sonarr_session.headers.update({'X-Api-Key': SONARR_API_KEY})
+
 
 def build_sheets_service():
     if GOOGLE_SERVICE_ACCOUNT_FILE:
@@ -55,10 +61,17 @@ def build_sheets_service():
         raise ValueError("No Google auth configured: set api_key or service_account_file in env.toml")
 
 
+def get_read_range():
+    # Read URL (A), current status (B), and current date (C) in one call
+    sheet_name, cell_part = RANGE_NAME.split('!')
+    start_row = ''.join(c for c in cell_part.split(':')[0] if c.isdigit())
+    return f"{sheet_name}!A{start_row}:C"
+
+
 def get_google_sheets_data(service):
     try:
         result = service.spreadsheets().values().get(
-            spreadsheetId=SPREADSHEET_ID, range=RANGE_NAME).execute()
+            spreadsheetId=SPREADSHEET_ID, range=get_read_range()).execute()
         return result.get('values', [])
     except HttpError as error:
         print(f"An error occurred: {error}")
@@ -104,11 +117,11 @@ def get_tmdb_id(url):
 
 # Returns (in_radarr, status_str, digital_release_date). status_str is None if not in Radarr.
 def get_radarr_status(tmdb_id):
-    response = requests.get(f"{RADARR_URL}/movie?tmdbId={tmdb_id}", headers={'X-Api-Key': RADARR_API_KEY})
+    response = radarr_session.get(f"{RADARR_URL}/movie?tmdbId={tmdb_id}")
     movies = response.json()
     if not movies:
         # Not in Radarr yet - look up release date from Radarr's TMDb cache
-        lookup = requests.get(f"{RADARR_URL}/movie/lookup/tmdb?tmdbId={tmdb_id}", headers={'X-Api-Key': RADARR_API_KEY})
+        lookup = radarr_session.get(f"{RADARR_URL}/movie/lookup/tmdb?tmdbId={tmdb_id}")
         release_date = format_date(lookup.json().get('digitalRelease')) if lookup.status_code == 200 else ""
         return False, None, release_date
     movie = movies[0]
@@ -118,13 +131,13 @@ def get_radarr_status(tmdb_id):
 
 # Returns (in_sonarr, status_str, first_aired_date). status_str is None if not in Sonarr.
 def get_sonarr_status(tmdb_id):
-    lookup = requests.get(f"{SONARR_URL}/series/lookup?term=tmdb:{tmdb_id}", headers={'X-Api-Key': SONARR_API_KEY}).json()
+    lookup = sonarr_session.get(f"{SONARR_URL}/series/lookup?term=tmdb:{tmdb_id}").json()
     if not lookup:
         print(f"Could not find series with tmdbId {tmdb_id}")
         return True, "Not Found", ""
     first_aired = format_date(lookup[0].get('firstAired'))
     tvdb_id = lookup[0]['tvdbId']
-    series = requests.get(f"{SONARR_URL}/series?tvdbId={tvdb_id}", headers={'X-Api-Key': SONARR_API_KEY}).json()
+    series = sonarr_session.get(f"{SONARR_URL}/series?tvdbId={tvdb_id}").json()
     if not series:
         return False, None, first_aired
     stats = series[0].get('statistics', {})
@@ -147,13 +160,13 @@ def add_to_radarr(tmdb_id):
             "searchForMovie": True
         }
     }
-    add_response = requests.post(f"{RADARR_URL}/movie", json=payload, headers={'X-Api-Key': RADARR_API_KEY})
+    add_response = radarr_session.post(f"{RADARR_URL}/movie", json=payload)
     return add_response.status_code == 201
 
 
 # Add show to Sonarr
 def add_to_sonarr(tmdb_id):
-    response = requests.get(f"{SONARR_URL}/series/lookup?term=tmdb:{tmdb_id}", headers={'X-Api-Key': SONARR_API_KEY})
+    response = sonarr_session.get(f"{SONARR_URL}/series/lookup?term=tmdb:{tmdb_id}")
     if response.status_code == 200 and response.json():
         show_data = response.json()[0]
         payload = {
@@ -166,7 +179,7 @@ def add_to_sonarr(tmdb_id):
                 "searchForMissingEpisodes": True
             }
         }
-        add_response = requests.post(f"{SONARR_URL}/series", json=payload, headers={'X-Api-Key': SONARR_API_KEY})
+        add_response = sonarr_session.post(f"{SONARR_URL}/series", json=payload)
         print(add_response.json())
         return add_response.status_code == 201
     return False
@@ -178,12 +191,20 @@ def main():
     links = get_google_sheets_data(sheets_service)
     rows = []
 
-    for link in links:
-        if not link:
+    for row_data in links:
+        url = row_data[0] if row_data else ""
+        current_status = row_data[1] if len(row_data) > 1 else ""
+        current_date = row_data[2] if len(row_data) > 2 else ""
+
+        if not url:
             rows.append(["", ""])
             continue
 
-        url = link[0]
+        # Skip API calls for already-downloaded items
+        if current_status == "Downloaded":
+            rows.append([current_status, current_date])
+            continue
+
         tmdb_id = get_tmdb_id(url)
         if not tmdb_id:
             rows.append(["", ""])
