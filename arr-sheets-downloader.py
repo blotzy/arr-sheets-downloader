@@ -10,6 +10,7 @@
 import csv
 import io
 import os
+import re
 import tomllib
 
 import requests
@@ -30,6 +31,8 @@ GOOGLE_SHEETS_API_KEY = config['google'].get('api_key')
 GOOGLE_SERVICE_ACCOUNT_FILE = config['google'].get('service_account_file')
 SPREADSHEET_ID = config['google']['spreadsheet_id']
 RANGE_NAME = config['google']['spreadsheet_range']
+EBOOKS_RANGE = config['google'].get('ebooks_range')
+AUDIOBOOKS_RANGE = config['google'].get('audiobooks_range')
 
 RADARR_API_KEY = config['radarr']['api_key']
 RADARR_URL = config['radarr']['url']
@@ -41,11 +44,17 @@ SONARR_URL = config['sonarr']['url']
 SONARR_QUALITY_PROFILE = config['sonarr']['quality_profile']
 SONARR_ROOT_FOLDER_PATH = config['sonarr']['root_folder_path']
 
+_ll_config = config.get('lazylibrarian', {})
+LAZYLIBRARIAN_API_KEY = _ll_config.get('api_key')
+LAZYLIBRARIAN_URL = _ll_config.get('url')
+
 radarr_session = requests.Session()
 radarr_session.headers.update({'X-Api-Key': RADARR_API_KEY})
 
 sonarr_session = requests.Session()
 sonarr_session.headers.update({'X-Api-Key': SONARR_API_KEY})
+
+lazylibrarian_session = requests.Session()
 
 
 def build_sheets_service():
@@ -61,29 +70,30 @@ def build_sheets_service():
         raise ValueError("No Google auth configured: set api_key or service_account_file in env.toml")
 
 
-def get_read_range():
+def get_read_range(range_name):
     # Read URL (A), current status (B), and current date (C) in one call
-    sheet_name, cell_part = RANGE_NAME.split('!')
+    # e.g. "Sheet1!A2:A" -> "Sheet1!A2:C"
+    sheet_name, cell_part = range_name.split('!')
     start_row = ''.join(c for c in cell_part.split(':')[0] if c.isdigit())
     return f"{sheet_name}!A{start_row}:C"
 
 
-def get_google_sheets_data(service):
+def get_output_range(range_name):
+    # Derive the 2-column output range (B=status, C=release date)
+    # e.g. "Sheet1!A2:A" -> "Sheet1!B2:C"
+    sheet_name, cell_part = range_name.split('!')
+    start_row = ''.join(c for c in cell_part.split(':')[0] if c.isdigit())
+    return f"{sheet_name}!B{start_row}:C"
+
+
+def get_google_sheets_data(service, range_name):
     try:
         result = service.spreadsheets().values().get(
-            spreadsheetId=SPREADSHEET_ID, range=get_read_range()).execute()
+            spreadsheetId=SPREADSHEET_ID, range=get_read_range(range_name)).execute()
         return result.get('values', [])
     except HttpError as error:
         print(f"An error occurred: {error}")
         return []
-
-
-def get_output_range():
-    # Derive the 2-column output range (B=status, C=release date) from RANGE_NAME
-    # e.g. "Sheet1!A2:A" -> "Sheet1!B2:C"
-    sheet_name, cell_part = RANGE_NAME.split('!')
-    start_row = ''.join(c for c in cell_part.split(':')[0] if c.isdigit())
-    return f"{sheet_name}!B{start_row}:C"
 
 
 def format_date(date_str):
@@ -91,12 +101,12 @@ def format_date(date_str):
     return date_str[:10] if date_str else ""
 
 
-def update_sheet_statuses(service, rows):
+def update_sheet_statuses(service, rows, range_name):
     # rows is a list of [status, release_date] pairs
     try:
         service.spreadsheets().values().update(
             spreadsheetId=SPREADSHEET_ID,
-            range=get_output_range(),
+            range=get_output_range(range_name),
             valueInputOption='RAW',
             body={'values': rows}
         ).execute()
@@ -106,7 +116,8 @@ def update_sheet_statuses(service, rows):
             print("Note: writing to sheets requires a service account, not an API key.")
 
 
-# Get TMDb ID from URL
+# --- TMDb / Radarr / Sonarr ---
+
 def get_tmdb_id(url):
     if 'themoviedb.org/movie/' in url:
         return url.split('/movie/')[1].split('-')[0]
@@ -149,7 +160,6 @@ def get_sonarr_status(tmdb_id):
     return True, "Monitored", first_aired
 
 
-# Add movie to Radarr
 def add_to_radarr(tmdb_id):
     payload = {
         "qualityProfileId": RADARR_QUALITY_PROFILE,
@@ -164,7 +174,6 @@ def add_to_radarr(tmdb_id):
     return add_response.status_code == 201
 
 
-# Add show to Sonarr
 def add_to_sonarr(tmdb_id):
     response = sonarr_session.get(f"{SONARR_URL}/series/lookup?term=tmdb:{tmdb_id}")
     if response.status_code == 200 and response.json():
@@ -185,10 +194,54 @@ def add_to_sonarr(tmdb_id):
     return False
 
 
-# Main function
-def main():
-    sheets_service = build_sheets_service()
-    links = get_google_sheets_data(sheets_service)
+# --- GoodReads / LazyLibrarian ---
+
+def get_goodreads_id(url):
+    if 'goodreads.com/book/show/' in url:
+        id_part = url.split('/book/show/')[1]
+        return re.split(r'[-\.?/]', id_part)[0]
+    return None
+
+
+def fetch_lazylibrarian_books():
+    """Fetch all books from LazyLibrarian once, keyed by GoodReads BookID."""
+    response = lazylibrarian_session.get(
+        f"{LAZYLIBRARIAN_URL}/api",
+        params={'apikey': LAZYLIBRARIAN_API_KEY, 'cmd': 'getAllBooks'}
+    )
+    if response.status_code != 200:
+        return {}
+    data = response.json()
+    books = data if isinstance(data, list) else data.get('books', [])
+    return {str(b['BookID']): b for b in books if b.get('BookID')}
+
+
+# Returns (in_ll, status_str, pub_date). status_str is None if not in LazyLibrarian.
+def get_book_status(goodreads_id, book_type, ll_books):
+    book = ll_books.get(str(goodreads_id))
+    if not book:
+        return False, None, ""
+    pub_date = format_date(book.get('BookDate', ''))
+    library_field = 'AudioLibrary' if book_type == 'audiobook' else 'BookLibrary'
+    status_field = 'AudioStatus' if book_type == 'audiobook' else 'Status'
+    if book.get(library_field):
+        return True, 'Downloaded', pub_date
+    ll_status = book.get(status_field, '')
+    if ll_status == 'Skipped':
+        return True, 'Skipped', pub_date
+    return True, 'Monitored', pub_date
+
+
+def add_to_lazylibrarian(goodreads_id):
+    response = lazylibrarian_session.get(
+        f"{LAZYLIBRARIAN_URL}/api",
+        params={'apikey': LAZYLIBRARIAN_API_KEY, 'cmd': 'addBook', 'id': goodreads_id}
+    )
+    return response.status_code == 200
+
+
+def process_books_tab(sheets_service, range_name, book_type, ll_books):
+    links = get_google_sheets_data(sheets_service, range_name)
     rows = []
 
     for row_data in links:
@@ -200,7 +253,50 @@ def main():
             rows.append(["", ""])
             continue
 
-        # Skip API calls for already-downloaded items
+        if current_status == "Downloaded":
+            rows.append([current_status, current_date])
+            continue
+
+        goodreads_id = get_goodreads_id(url)
+        if not goodreads_id:
+            rows.append(["", ""])
+            continue
+
+        in_ll, status, pub_date = get_book_status(goodreads_id, book_type, ll_books)
+        if not in_ll:
+            if add_to_lazylibrarian(goodreads_id):
+                print(f"Added {book_type} with GoodReads ID {goodreads_id} to LazyLibrarian")
+                ll_books[str(goodreads_id)] = {}
+                status = "Monitored"
+            else:
+                print(f"Failed to add {book_type} with GoodReads ID {goodreads_id} to LazyLibrarian")
+                status = "Failed to Add"
+        else:
+            print(f"{book_type.capitalize()} with GoodReads ID {goodreads_id} is in LazyLibrarian ({status})")
+
+        rows.append([status, pub_date])
+
+    if rows:
+        update_sheet_statuses(sheets_service, rows, range_name)
+
+
+# Main function
+def main():
+    sheets_service = build_sheets_service()
+
+    # Movies and TV shows
+    links = get_google_sheets_data(sheets_service, RANGE_NAME)
+    rows = []
+
+    for row_data in links:
+        url = row_data[0] if row_data else ""
+        current_status = row_data[1] if len(row_data) > 1 else ""
+        current_date = row_data[2] if len(row_data) > 2 else ""
+
+        if not url:
+            rows.append(["", ""])
+            continue
+
         if current_status == "Downloaded":
             rows.append([current_status, current_date])
             continue
@@ -239,7 +335,15 @@ def main():
         rows.append([status, release_date])
 
     if rows:
-        update_sheet_statuses(sheets_service, rows)
+        update_sheet_statuses(sheets_service, rows, RANGE_NAME)
+
+    # Ebooks and audiobooks
+    if LAZYLIBRARIAN_URL and LAZYLIBRARIAN_API_KEY:
+        ll_books = fetch_lazylibrarian_books()
+        if EBOOKS_RANGE:
+            process_books_tab(sheets_service, EBOOKS_RANGE, 'ebook', ll_books)
+        if AUDIOBOOKS_RANGE:
+            process_books_tab(sheets_service, AUDIOBOOKS_RANGE, 'audiobook', ll_books)
 
 
 if __name__ == "__main__":
