@@ -115,9 +115,9 @@ def update_sheet_statuses(service, rows, range_name, spreadsheet_id=None):
             body={'values': rows}
         ).execute()
     except HttpError as error:
-        print(f"Failed to update status column: {error}")
         if GOOGLE_SHEETS_API_KEY and not GOOGLE_SERVICE_ACCOUNT_FILE:
-            print("Note: writing to sheets requires a service account, not an API key.")
+            raise RuntimeError("Writing to sheets requires a service account, not an API key.") from error
+        raise
 
 
 # --- TMDb / Radarr / Sonarr ---
@@ -282,19 +282,13 @@ def process_books_tab(sheets_service, range_name, book_type, ll_books, spreadshe
             continue
 
         in_ll, status, pub_date = get_book_status(goodreads_id, book_type, ll_books)
-        if not in_ll:
-            if add_to_lazylibrarian(goodreads_id, book_type):
-                print(f"Added {book_type} with GoodReads ID {goodreads_id} to LazyLibrarian")
-                status = "Monitored"
-            else:
-                print(f"Failed to add {book_type} with GoodReads ID {goodreads_id} to LazyLibrarian")
-                status = "Failed to Add"
-        elif status == "Skipped":
-            print(f"{book_type.capitalize()} with GoodReads ID {goodreads_id} is Skipped, marking Wanted and searching")
-            want_and_search_lazylibrarian(goodreads_id, book_type)
-            status = "Monitored"
+        if status == "Downloaded":
+            print(f"{book_type.capitalize()} with GoodReads ID {goodreads_id} is Downloaded")
         else:
-            print(f"{book_type.capitalize()} with GoodReads ID {goodreads_id} is in LazyLibrarian ({status})")
+            add_to_lazylibrarian(goodreads_id, book_type)
+            action = "Added" if not in_ll else f"Was {status}, re-set to Wanted"
+            print(f"{action}: {book_type} with GoodReads ID {goodreads_id}")
+            status = "Monitored"
 
         rows.append([status, pub_date])
 
