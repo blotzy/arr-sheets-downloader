@@ -38,15 +38,18 @@ RADARR_API_KEY = config['radarr']['api_key']
 RADARR_URL = config['radarr']['url']
 RADARR_QUALITY_PROFILE = config['radarr']['quality_profile']
 RADARR_ROOT_FOLDER_PATH = config['radarr']['root_folder_path']
+RADARR_SPREADSHEET_ID = config['radarr'].get('spreadsheet_id', SPREADSHEET_ID)
 
 SONARR_API_KEY = config['sonarr']['api_key']
 SONARR_URL = config['sonarr']['url']
 SONARR_QUALITY_PROFILE = config['sonarr']['quality_profile']
 SONARR_ROOT_FOLDER_PATH = config['sonarr']['root_folder_path']
+SONARR_SPREADSHEET_ID = config['sonarr'].get('spreadsheet_id', SPREADSHEET_ID)
 
 _ll_config = config.get('lazylibrarian', {})
 LAZYLIBRARIAN_API_KEY = _ll_config.get('api_key')
 LAZYLIBRARIAN_URL = _ll_config.get('url')
+LAZYLIBRARIAN_SPREADSHEET_ID = _ll_config.get('spreadsheet_id', SPREADSHEET_ID)
 
 radarr_session = requests.Session()
 radarr_session.headers.update({'X-Api-Key': RADARR_API_KEY})
@@ -86,10 +89,11 @@ def get_output_range(range_name):
     return f"{sheet_name}!B{start_row}:C"
 
 
-def get_google_sheets_data(service, range_name):
+def get_google_sheets_data(service, range_name, spreadsheet_id=None):
     try:
         result = service.spreadsheets().values().get(
-            spreadsheetId=SPREADSHEET_ID, range=get_read_range(range_name)).execute()
+            spreadsheetId=spreadsheet_id or SPREADSHEET_ID,
+            range=get_read_range(range_name)).execute()
         return result.get('values', [])
     except HttpError as error:
         print(f"An error occurred: {error}")
@@ -101,11 +105,11 @@ def format_date(date_str):
     return date_str[:10] if date_str else ""
 
 
-def update_sheet_statuses(service, rows, range_name):
+def update_sheet_statuses(service, rows, range_name, spreadsheet_id=None):
     # rows is a list of [status, release_date] pairs
     try:
         service.spreadsheets().values().update(
-            spreadsheetId=SPREADSHEET_ID,
+            spreadsheetId=spreadsheet_id or SPREADSHEET_ID,
             range=get_output_range(range_name),
             valueInputOption='RAW',
             body={'values': rows}
@@ -240,8 +244,8 @@ def add_to_lazylibrarian(goodreads_id):
     return response.status_code == 200
 
 
-def process_books_tab(sheets_service, range_name, book_type, ll_books):
-    links = get_google_sheets_data(sheets_service, range_name)
+def process_books_tab(sheets_service, range_name, book_type, ll_books, spreadsheet_id=None):
+    links = get_google_sheets_data(sheets_service, range_name, spreadsheet_id)
     rows = []
 
     for row_data in links:
@@ -277,15 +281,12 @@ def process_books_tab(sheets_service, range_name, book_type, ll_books):
         rows.append([status, pub_date])
 
     if rows:
-        update_sheet_statuses(sheets_service, rows, range_name)
+        update_sheet_statuses(sheets_service, rows, range_name, spreadsheet_id)
 
 
-# Main function
-def main():
-    sheets_service = build_sheets_service()
-
-    # Movies and TV shows
-    links = get_google_sheets_data(sheets_service, RANGE_NAME)
+def process_media_tab(sheets_service, range_name, spreadsheet_id, url_type=None):
+    """Process movie/TV rows. url_type: 'movie', 'tv', or None (both)."""
+    links = get_google_sheets_data(sheets_service, range_name, spreadsheet_id)
     rows = []
 
     for row_data in links:
@@ -306,7 +307,7 @@ def main():
             rows.append(["", ""])
             continue
 
-        if 'themoviedb.org/movie/' in url:
+        if 'themoviedb.org/movie/' in url and url_type != 'tv':
             in_radarr, status, release_date = get_radarr_status(tmdb_id)
             if not in_radarr:
                 if add_to_radarr(tmdb_id):
@@ -317,7 +318,8 @@ def main():
                     status = "Failed to Add"
             else:
                 print(f"Movie with TMDb ID {tmdb_id} is already in Radarr ({status})")
-        elif 'themoviedb.org/tv/' in url:
+            rows.append([status, release_date])
+        elif 'themoviedb.org/tv/' in url and url_type != 'movie':
             in_sonarr, status, release_date = get_sonarr_status(tmdb_id)
             if not in_sonarr:
                 if add_to_sonarr(tmdb_id):
@@ -328,22 +330,34 @@ def main():
                     status = "Failed to Add"
             else:
                 print(f"Show with TMDb ID {tmdb_id} is already in Sonarr ({status})")
+            rows.append([status, release_date])
         else:
-            status = ""
-            release_date = ""
-
-        rows.append([status, release_date])
+            rows.append(["", ""])
 
     if rows:
-        update_sheet_statuses(sheets_service, rows, RANGE_NAME)
+        update_sheet_statuses(sheets_service, rows, range_name, spreadsheet_id)
+
+
+# Main function
+def main():
+    sheets_service = build_sheets_service()
+
+    # Movies and TV shows
+    if RADARR_SPREADSHEET_ID == SONARR_SPREADSHEET_ID:
+        # Same spreadsheet: process both URL types in one read/write pass
+        process_media_tab(sheets_service, RANGE_NAME, RADARR_SPREADSHEET_ID)
+    else:
+        # Different spreadsheets: process each separately
+        process_media_tab(sheets_service, RANGE_NAME, RADARR_SPREADSHEET_ID, url_type='movie')
+        process_media_tab(sheets_service, RANGE_NAME, SONARR_SPREADSHEET_ID, url_type='tv')
 
     # Ebooks and audiobooks
     if LAZYLIBRARIAN_URL and LAZYLIBRARIAN_API_KEY:
         ll_books = fetch_lazylibrarian_books()
         if EBOOKS_RANGE:
-            process_books_tab(sheets_service, EBOOKS_RANGE, 'ebook', ll_books)
+            process_books_tab(sheets_service, EBOOKS_RANGE, 'ebook', ll_books, LAZYLIBRARIAN_SPREADSHEET_ID)
         if AUDIOBOOKS_RANGE:
-            process_books_tab(sheets_service, AUDIOBOOKS_RANGE, 'audiobook', ll_books)
+            process_books_tab(sheets_service, AUDIOBOOKS_RANGE, 'audiobook', ll_books, LAZYLIBRARIAN_SPREADSHEET_ID)
 
 
 if __name__ == "__main__":
