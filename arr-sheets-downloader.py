@@ -236,12 +236,27 @@ def get_book_status(goodreads_id, book_type, ll_books):
     return True, 'Monitored', pub_date
 
 
-def add_to_lazylibrarian(goodreads_id):
+def want_and_search_lazylibrarian(goodreads_id, book_type):
+    set_status_cmd = 'setAudioStatus' if book_type == 'audiobook' else 'setStatus'
+    lazylibrarian_session.get(
+        f"{LAZYLIBRARIAN_URL}/api",
+        params={'apikey': LAZYLIBRARIAN_API_KEY, 'cmd': set_status_cmd, 'id': goodreads_id, 'status': 'Wanted'}
+    )
+    lazylibrarian_session.get(
+        f"{LAZYLIBRARIAN_URL}/api",
+        params={'apikey': LAZYLIBRARIAN_API_KEY, 'cmd': 'searchBook', 'id': goodreads_id}
+    )
+
+
+def add_to_lazylibrarian(goodreads_id, book_type):
     response = lazylibrarian_session.get(
         f"{LAZYLIBRARIAN_URL}/api",
         params={'apikey': LAZYLIBRARIAN_API_KEY, 'cmd': 'addBook', 'id': goodreads_id}
     )
-    return response.status_code == 200
+    if response.status_code != 200:
+        return False
+    want_and_search_lazylibrarian(goodreads_id, book_type)
+    return True
 
 
 def process_books_tab(sheets_service, range_name, book_type, ll_books, spreadsheet_id=None):
@@ -268,13 +283,16 @@ def process_books_tab(sheets_service, range_name, book_type, ll_books, spreadshe
 
         in_ll, status, pub_date = get_book_status(goodreads_id, book_type, ll_books)
         if not in_ll:
-            if add_to_lazylibrarian(goodreads_id):
+            if add_to_lazylibrarian(goodreads_id, book_type):
                 print(f"Added {book_type} with GoodReads ID {goodreads_id} to LazyLibrarian")
-                ll_books[str(goodreads_id)] = {}
                 status = "Monitored"
             else:
                 print(f"Failed to add {book_type} with GoodReads ID {goodreads_id} to LazyLibrarian")
                 status = "Failed to Add"
+        elif status == "Skipped":
+            print(f"{book_type.capitalize()} with GoodReads ID {goodreads_id} is Skipped, marking Wanted and searching")
+            want_and_search_lazylibrarian(goodreads_id, book_type)
+            status = "Monitored"
         else:
             print(f"{book_type.capitalize()} with GoodReads ID {goodreads_id} is in LazyLibrarian ({status})")
 
