@@ -96,8 +96,8 @@ def get_google_sheets_data(service, range_name, spreadsheet_id=None):
             range=get_read_range(range_name)).execute()
         return result.get('values', [])
     except HttpError as error:
-        print(f"An error occurred: {error}")
-        return []
+        print(f"Failed to read sheet: {error}")
+        raise
 
 
 def format_date(date_str):
