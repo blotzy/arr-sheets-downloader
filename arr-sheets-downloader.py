@@ -236,16 +236,28 @@ def get_book_status(goodreads_id, book_type, ll_books):
     return True, 'Monitored', pub_date
 
 
+def _ll_api(params):
+    lazylibrarian_session.get(f"{LAZYLIBRARIAN_URL}/api",
+                              params={'apikey': LAZYLIBRARIAN_API_KEY, **params})
+
+
+def resume_authors(goodreads_id):
+    """Resume any Paused authors associated with a book."""
+    resp = lazylibrarian_session.get(
+        f"{LAZYLIBRARIAN_URL}/api",
+        params={'apikey': LAZYLIBRARIAN_API_KEY, 'cmd': 'getBookAuthors', 'id': goodreads_id}
+    )
+    if resp.status_code == 200:
+        for author in resp.json():
+            author_id = author.get('AuthorID')
+            if author_id:
+                _ll_api({'cmd': 'resumeAuthor', 'id': author_id})
+
+
 def want_and_search_lazylibrarian(goodreads_id, book_type):
-    set_status_cmd = 'setAudioStatus' if book_type == 'audiobook' else 'setStatus'
-    lazylibrarian_session.get(
-        f"{LAZYLIBRARIAN_URL}/api",
-        params={'apikey': LAZYLIBRARIAN_API_KEY, 'cmd': set_status_cmd, 'id': goodreads_id, 'status': 'Wanted'}
-    )
-    lazylibrarian_session.get(
-        f"{LAZYLIBRARIAN_URL}/api",
-        params={'apikey': LAZYLIBRARIAN_API_KEY, 'cmd': 'searchBook', 'id': goodreads_id}
-    )
+    ll_type = 'AudioBook' if book_type == 'audiobook' else 'eBook'
+    _ll_api({'cmd': 'queueBook', 'id': goodreads_id, 'type': ll_type})
+    _ll_api({'cmd': 'searchBook', 'id': goodreads_id, 'type': ll_type})
 
 
 def add_to_lazylibrarian(goodreads_id, book_type):
@@ -255,6 +267,7 @@ def add_to_lazylibrarian(goodreads_id, book_type):
     )
     if response.status_code != 200:
         return False
+    resume_authors(goodreads_id)
     want_and_search_lazylibrarian(goodreads_id, book_type)
     return True
 
@@ -284,11 +297,23 @@ def process_books_tab(sheets_service, range_name, book_type, ll_books, spreadshe
         in_ll, status, pub_date = get_book_status(goodreads_id, book_type, ll_books)
         if status == "Downloaded":
             print(f"{book_type.capitalize()} with GoodReads ID {goodreads_id} is Downloaded")
-        else:
-            add_to_lazylibrarian(goodreads_id, book_type)
-            action = "Added" if not in_ll else f"Was {status}, re-set to Wanted"
-            print(f"{action}: {book_type} with GoodReads ID {goodreads_id}")
+        elif not in_ll:
+            if add_to_lazylibrarian(goodreads_id, book_type):
+                print(f"Added {book_type} with GoodReads ID {goodreads_id} to LazyLibrarian")
+                status = "Monitored"
+            else:
+                print(f"Failed to add {book_type} with GoodReads ID {goodreads_id} to LazyLibrarian")
+                status = "Failed to Add"
+        elif status == "Skipped":
+            # Book exists but Skipped — resume the author then re-queue and search
+            author_id = ll_books.get(str(goodreads_id), {}).get('AuthorID')
+            if author_id:
+                _ll_api({'cmd': 'resumeAuthor', 'id': author_id})
+            want_and_search_lazylibrarian(goodreads_id, book_type)
+            print(f"Re-queued {book_type} with GoodReads ID {goodreads_id} (was Skipped)")
             status = "Monitored"
+        else:
+            print(f"{book_type.capitalize()} with GoodReads ID {goodreads_id} is in LazyLibrarian ({status})")
 
         rows.append([status, pub_date])
 
