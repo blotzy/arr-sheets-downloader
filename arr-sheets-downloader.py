@@ -12,6 +12,7 @@ import io
 import os
 import re
 import tomllib
+from dataclasses import dataclass
 
 import requests
 from google.oauth2 import service_account
@@ -19,56 +20,107 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-# Configuration
+# --- Config dataclasses ---
+
+@dataclass
+class GoogleConfig:
+    spreadsheet_id: str
+    range: str
+    write_status: bool
+    api_key: str | None = None
+    service_account_file: str | None = None
+    ebooks_range: str | None = None
+    audiobooks_range: str | None = None
+
+@dataclass
+class RadarrConfig:
+    api_key: str
+    url: str
+    quality_profile: int
+    root_folder_path: str
+    spreadsheet_id: str
+    range: str
+
+@dataclass
+class SonarrConfig:
+    api_key: str
+    url: str
+    quality_profile: int
+    root_folder_path: str
+    spreadsheet_id: str
+    range: str
+
+@dataclass
+class LazyLibrarianConfig:
+    api_key: str | None
+    url: str | None
+    spreadsheet_id: str
+
+
+# --- Load config ---
+
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 _config_path = os.path.join(_script_dir, 'env.toml')
 if not os.path.exists(_config_path):
     raise FileNotFoundError("env.toml not found. Copy env.example.toml to env.toml and fill in your values.")
 with open(_config_path, 'rb') as f:
-    config = tomllib.load(f)
+    _config = tomllib.load(f)
 
-GOOGLE_SHEETS_API_KEY = config['google'].get('api_key')
-GOOGLE_SERVICE_ACCOUNT_FILE = config['google'].get('service_account_file')
-SPREADSHEET_ID = config['google']['spreadsheet_id']
-RANGE_NAME = config['google']['spreadsheet_range']
-EBOOKS_RANGE = config['google'].get('ebooks_range')
-AUDIOBOOKS_RANGE = config['google'].get('audiobooks_range')
+google_cfg = GoogleConfig(
+    api_key=_config['google'].get('api_key'),
+    service_account_file=_config['google'].get('service_account_file'),
+    spreadsheet_id=_config['google']['spreadsheet_id'],
+    range=_config['google']['spreadsheet_range'],
+    ebooks_range=_config['google'].get('ebooks_range'),
+    audiobooks_range=_config['google'].get('audiobooks_range'),
+    write_status=_config['google'].get('write_status', True),
+)
 
-RADARR_API_KEY = config['radarr']['api_key']
-RADARR_URL = config['radarr']['url']
-RADARR_QUALITY_PROFILE = config['radarr']['quality_profile']
-RADARR_ROOT_FOLDER_PATH = config['radarr']['root_folder_path']
-RADARR_SPREADSHEET_ID = config['radarr'].get('spreadsheet_id', SPREADSHEET_ID)
+radarr_cfg = RadarrConfig(
+    api_key=_config['radarr']['api_key'],
+    url=_config['radarr']['url'],
+    quality_profile=_config['radarr']['quality_profile'],
+    root_folder_path=_config['radarr']['root_folder_path'],
+    spreadsheet_id=_config['radarr'].get('spreadsheet_id', google_cfg.spreadsheet_id),
+    range=_config['radarr'].get('spreadsheet_range', google_cfg.range),
+)
 
-SONARR_API_KEY = config['sonarr']['api_key']
-SONARR_URL = config['sonarr']['url']
-SONARR_QUALITY_PROFILE = config['sonarr']['quality_profile']
-SONARR_ROOT_FOLDER_PATH = config['sonarr']['root_folder_path']
-SONARR_SPREADSHEET_ID = config['sonarr'].get('spreadsheet_id', SPREADSHEET_ID)
+sonarr_cfg = SonarrConfig(
+    api_key=_config['sonarr']['api_key'],
+    url=_config['sonarr']['url'],
+    quality_profile=_config['sonarr']['quality_profile'],
+    root_folder_path=_config['sonarr']['root_folder_path'],
+    spreadsheet_id=_config['sonarr'].get('spreadsheet_id', google_cfg.spreadsheet_id),
+    range=_config['sonarr'].get('spreadsheet_range', google_cfg.range),
+)
 
-_ll_config = config.get('lazylibrarian', {})
-LAZYLIBRARIAN_API_KEY = _ll_config.get('api_key')
-LAZYLIBRARIAN_URL = _ll_config.get('url')
-LAZYLIBRARIAN_SPREADSHEET_ID = _ll_config.get('spreadsheet_id', SPREADSHEET_ID)
+_ll = _config.get('lazylibrarian', {})
+ll_cfg = LazyLibrarianConfig(
+    api_key=_ll.get('api_key'),
+    url=_ll.get('url'),
+    spreadsheet_id=_ll.get('spreadsheet_id', google_cfg.spreadsheet_id),
+)
 
 radarr_session = requests.Session()
-radarr_session.headers.update({'X-Api-Key': RADARR_API_KEY})
+radarr_session.headers.update({'X-Api-Key': radarr_cfg.api_key})
 
 sonarr_session = requests.Session()
-sonarr_session.headers.update({'X-Api-Key': SONARR_API_KEY})
+sonarr_session.headers.update({'X-Api-Key': sonarr_cfg.api_key})
 
 lazylibrarian_session = requests.Session()
 
 
+# --- Google Sheets ---
+
 def build_sheets_service():
-    if GOOGLE_SERVICE_ACCOUNT_FILE:
+    if google_cfg.service_account_file:
         # Read+write scope so we can update the status column
         scopes = ['https://www.googleapis.com/auth/spreadsheets']
         credentials = service_account.Credentials.from_service_account_file(
-            GOOGLE_SERVICE_ACCOUNT_FILE, scopes=scopes)
+            google_cfg.service_account_file, scopes=scopes)
         return build('sheets', 'v4', credentials=credentials)
-    elif GOOGLE_SHEETS_API_KEY:
-        return build('sheets', 'v4', developerKey=GOOGLE_SHEETS_API_KEY)
+    elif google_cfg.api_key:
+        return build('sheets', 'v4', developerKey=google_cfg.api_key)
     else:
         raise ValueError("No Google auth configured: set api_key or service_account_file in env.toml")
 
@@ -92,7 +144,7 @@ def get_output_range(range_name):
 def get_google_sheets_data(service, range_name, spreadsheet_id=None):
     try:
         result = service.spreadsheets().values().get(
-            spreadsheetId=spreadsheet_id or SPREADSHEET_ID,
+            spreadsheetId=spreadsheet_id or google_cfg.spreadsheet_id,
             range=get_read_range(range_name)).execute()
         return result.get('values', [])
     except HttpError as error:
@@ -109,13 +161,13 @@ def update_sheet_statuses(service, rows, range_name, spreadsheet_id=None):
     # rows is a list of [status, release_date] pairs
     try:
         service.spreadsheets().values().update(
-            spreadsheetId=spreadsheet_id or SPREADSHEET_ID,
+            spreadsheetId=spreadsheet_id or google_cfg.spreadsheet_id,
             range=get_output_range(range_name),
             valueInputOption='RAW',
             body={'values': rows}
         ).execute()
     except HttpError as error:
-        if GOOGLE_SHEETS_API_KEY and not GOOGLE_SERVICE_ACCOUNT_FILE:
+        if google_cfg.api_key and not google_cfg.service_account_file:
             raise RuntimeError("Writing to sheets requires a service account, not an API key.") from error
         raise
 
@@ -132,11 +184,11 @@ def get_tmdb_id(url):
 
 # Returns (in_radarr, status_str, digital_release_date). status_str is None if not in Radarr.
 def get_radarr_status(tmdb_id):
-    response = radarr_session.get(f"{RADARR_URL}/movie?tmdbId={tmdb_id}")
+    response = radarr_session.get(f"{radarr_cfg.url}/movie?tmdbId={tmdb_id}")
     movies = response.json()
     if not movies:
         # Not in Radarr yet - look up release date from Radarr's TMDb cache
-        lookup = radarr_session.get(f"{RADARR_URL}/movie/lookup/tmdb?tmdbId={tmdb_id}")
+        lookup = radarr_session.get(f"{radarr_cfg.url}/movie/lookup/tmdb?tmdbId={tmdb_id}")
         release_date = format_date(lookup.json().get('digitalRelease')) if lookup.status_code == 200 else ""
         return False, None, release_date
     movie = movies[0]
@@ -146,13 +198,13 @@ def get_radarr_status(tmdb_id):
 
 # Returns (in_sonarr, status_str, first_aired_date). status_str is None if not in Sonarr.
 def get_sonarr_status(tmdb_id):
-    lookup = sonarr_session.get(f"{SONARR_URL}/series/lookup?term=tmdb:{tmdb_id}").json()
+    lookup = sonarr_session.get(f"{sonarr_cfg.url}/series/lookup?term=tmdb:{tmdb_id}").json()
     if not lookup:
         print(f"Could not find series with tmdbId {tmdb_id}")
         return True, "Not Found", ""
     first_aired = format_date(lookup[0].get('firstAired'))
     tvdb_id = lookup[0]['tvdbId']
-    series = sonarr_session.get(f"{SONARR_URL}/series?tvdbId={tvdb_id}").json()
+    series = sonarr_session.get(f"{sonarr_cfg.url}/series?tvdbId={tvdb_id}").json()
     if not series:
         return False, None, first_aired
     stats = series[0].get('statistics', {})
@@ -166,33 +218,33 @@ def get_sonarr_status(tmdb_id):
 
 def add_to_radarr(tmdb_id):
     payload = {
-        "qualityProfileId": RADARR_QUALITY_PROFILE,
+        "qualityProfileId": radarr_cfg.quality_profile,
         "tmdbId": int(tmdb_id),
-        "rootFolderPath": RADARR_ROOT_FOLDER_PATH,
+        "rootFolderPath": radarr_cfg.root_folder_path,
         "monitored": True,
         "addOptions": {
             "searchForMovie": True
         }
     }
-    add_response = radarr_session.post(f"{RADARR_URL}/movie", json=payload)
+    add_response = radarr_session.post(f"{radarr_cfg.url}/movie", json=payload)
     return add_response.status_code == 201
 
 
 def add_to_sonarr(tmdb_id):
-    response = sonarr_session.get(f"{SONARR_URL}/series/lookup?term=tmdb:{tmdb_id}")
+    response = sonarr_session.get(f"{sonarr_cfg.url}/series/lookup?term=tmdb:{tmdb_id}")
     if response.status_code == 200 and response.json():
         show_data = response.json()[0]
         payload = {
             "title": show_data['title'],
-            "qualityProfileId": SONARR_QUALITY_PROFILE,
+            "qualityProfileId": sonarr_cfg.quality_profile,
             "tvdbId": int(show_data['tvdbId']),
-            "rootFolderPath": SONARR_ROOT_FOLDER_PATH,
+            "rootFolderPath": sonarr_cfg.root_folder_path,
             "monitored": True,
             "addOptions": {
                 "searchForMissingEpisodes": True
             }
         }
-        add_response = sonarr_session.post(f"{SONARR_URL}/series", json=payload)
+        add_response = sonarr_session.post(f"{sonarr_cfg.url}/series", json=payload)
         print(add_response.json())
         return add_response.status_code == 201
     return False
@@ -210,8 +262,8 @@ def get_goodreads_id(url):
 def fetch_lazylibrarian_books():
     """Fetch all books from LazyLibrarian once, keyed by GoodReads BookID."""
     response = lazylibrarian_session.get(
-        f"{LAZYLIBRARIAN_URL}/api",
-        params={'apikey': LAZYLIBRARIAN_API_KEY, 'cmd': 'getAllBooks'}
+        f"{ll_cfg.url}/api",
+        params={'apikey': ll_cfg.api_key, 'cmd': 'getAllBooks'}
     )
     if response.status_code != 200:
         return {}
@@ -237,15 +289,15 @@ def get_book_status(goodreads_id, book_type, ll_books):
 
 
 def _ll_api(params):
-    lazylibrarian_session.get(f"{LAZYLIBRARIAN_URL}/api",
-                              params={'apikey': LAZYLIBRARIAN_API_KEY, **params})
+    lazylibrarian_session.get(f"{ll_cfg.url}/api",
+                              params={'apikey': ll_cfg.api_key, **params})
 
 
 def resume_authors(goodreads_id):
     """Resume any Paused authors associated with a book."""
     resp = lazylibrarian_session.get(
-        f"{LAZYLIBRARIAN_URL}/api",
-        params={'apikey': LAZYLIBRARIAN_API_KEY, 'cmd': 'getBookAuthors', 'id': goodreads_id}
+        f"{ll_cfg.url}/api",
+        params={'apikey': ll_cfg.api_key, 'cmd': 'getBookAuthors', 'id': goodreads_id}
     )
     if resp.status_code == 200:
         for author in resp.json():
@@ -262,8 +314,8 @@ def want_and_search_lazylibrarian(goodreads_id, book_type):
 
 def add_to_lazylibrarian(goodreads_id, book_type):
     response = lazylibrarian_session.get(
-        f"{LAZYLIBRARIAN_URL}/api",
-        params={'apikey': LAZYLIBRARIAN_API_KEY, 'cmd': 'addBook', 'id': goodreads_id}
+        f"{ll_cfg.url}/api",
+        params={'apikey': ll_cfg.api_key, 'cmd': 'addBook', 'id': goodreads_id}
     )
     if response.status_code != 200:
         return False
@@ -317,7 +369,7 @@ def process_books_tab(sheets_service, range_name, book_type, ll_books, spreadshe
 
         rows.append([status, pub_date])
 
-    if rows:
+    if rows and google_cfg.write_status:
         update_sheet_statuses(sheets_service, rows, range_name, spreadsheet_id)
 
 
@@ -371,7 +423,7 @@ def process_media_tab(sheets_service, range_name, spreadsheet_id, url_type=None)
         else:
             rows.append(["", ""])
 
-    if rows:
+    if rows and google_cfg.write_status:
         update_sheet_statuses(sheets_service, rows, range_name, spreadsheet_id)
 
 
@@ -380,21 +432,21 @@ def main():
     sheets_service = build_sheets_service()
 
     # Movies and TV shows
-    if RADARR_SPREADSHEET_ID == SONARR_SPREADSHEET_ID:
-        # Same spreadsheet: process both URL types in one read/write pass
-        process_media_tab(sheets_service, RANGE_NAME, RADARR_SPREADSHEET_ID)
+    if radarr_cfg.spreadsheet_id == sonarr_cfg.spreadsheet_id and radarr_cfg.range == sonarr_cfg.range:
+        # Same spreadsheet and range: process both URL types in one read/write pass
+        process_media_tab(sheets_service, radarr_cfg.range, radarr_cfg.spreadsheet_id)
     else:
-        # Different spreadsheets: process each separately
-        process_media_tab(sheets_service, RANGE_NAME, RADARR_SPREADSHEET_ID, url_type='movie')
-        process_media_tab(sheets_service, RANGE_NAME, SONARR_SPREADSHEET_ID, url_type='tv')
+        # Different spreadsheets or ranges: process each separately
+        process_media_tab(sheets_service, radarr_cfg.range, radarr_cfg.spreadsheet_id, url_type='movie')
+        process_media_tab(sheets_service, sonarr_cfg.range, sonarr_cfg.spreadsheet_id, url_type='tv')
 
     # Ebooks and audiobooks
-    if LAZYLIBRARIAN_URL and LAZYLIBRARIAN_API_KEY:
+    if ll_cfg.url and ll_cfg.api_key:
         ll_books = fetch_lazylibrarian_books()
-        if EBOOKS_RANGE:
-            process_books_tab(sheets_service, EBOOKS_RANGE, 'ebook', ll_books, LAZYLIBRARIAN_SPREADSHEET_ID)
-        if AUDIOBOOKS_RANGE:
-            process_books_tab(sheets_service, AUDIOBOOKS_RANGE, 'audiobook', ll_books, LAZYLIBRARIAN_SPREADSHEET_ID)
+        if google_cfg.ebooks_range:
+            process_books_tab(sheets_service, google_cfg.ebooks_range, 'ebook', ll_books, ll_cfg.spreadsheet_id)
+        if google_cfg.audiobooks_range:
+            process_books_tab(sheets_service, google_cfg.audiobooks_range, 'audiobook', ll_books, ll_cfg.spreadsheet_id)
 
 
 if __name__ == "__main__":
