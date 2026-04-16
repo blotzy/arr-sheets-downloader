@@ -25,6 +25,7 @@ Items already marked `Downloaded` in the sheet are skipped without hitting any A
 - Python >= 3.11
 - [uv](https://docs.astral.sh/uv/) (handles dependencies automatically — no manual `pip install` needed)
 - A Google Sheet with TMDb/GoodReads links in column A
+- The GoodReads links must be on a separate tab from TMDb content (TV and Movies can be on the same tab if desired)
 - Google API credentials (API key **or** service account — see below)
 - Radarr and/or Sonarr with API access
 - LazyLibrarian (optional, for ebooks/audiobooks)
@@ -45,35 +46,6 @@ Copy the example config and fill in your values:
 cp env.example.toml env.toml
 ```
 
-Edit `env.toml`:
-
-```toml
-[google]
-# Use api_key for read-only access, or service_account_file for read+write (status updates)
-api_key = "YOUR_GOOGLE_API_KEY"
-# service_account_file = "/path/to/service-account.json"
-spreadsheet_id = "YOUR_SPREADSHEET_ID"
-spreadsheet_range = "Sheet1!A2:A"   # skip row 1 (header)
-write_status = true                 # set to false to skip writing status/date back to the sheet
-# ebooks_range = "Ebooks!A2:A"      # optional: separate tab for ebooks
-# audiobooks_range = "Audiobooks!A2:A"  # optional: separate tab for audiobooks
-
-[radarr]
-api_key = "YOUR_RADARR_API_KEY"
-url = "http://localhost:7878"
-quality_profile = 1                 # profile ID from Radarr Settings > Profiles
-root_folder_path = "/mnt/Media/Movies"
-
-[sonarr]
-api_key = "YOUR_SONARR_API_KEY"
-url = "http://localhost:8989"
-quality_profile = 1
-root_folder_path = "/mnt/Media/TV"
-
-[lazylibrarian]                     # optional section
-api_key = "YOUR_LAZYLIBRARIAN_API_KEY"
-url = "http://localhost:5299"
-```
 
 ### 3. Set up Google credentials
 
