@@ -253,9 +253,10 @@ def add_to_sonarr(tmdb_id):
 # --- GoodReads / LazyLibrarian ---
 
 def get_goodreads_id(url):
-    if 'goodreads.com/book/show/' in url:
-        id_part = url.split('/book/show/')[1]
-        return re.split(r'[-\.?/]', id_part)[0]
+    # Search for '/book/show/' followed by digits
+    match = re.search(r'/book/show/(\d+)', url)
+    if match:
+        return match.group(1)
     return None
 
 
