@@ -325,6 +325,14 @@ def add_to_lazylibrarian(goodreads_id, book_type):
     return True
 
 
+def _rows_changed(new_rows, links):
+    for i, row_data in enumerate(links):
+        existing = [row_data[1] if len(row_data) > 1 else "", row_data[2] if len(row_data) > 2 else ""]
+        if i >= len(new_rows) or new_rows[i] != existing:
+            return True
+    return len(new_rows) != len(links)
+
+
 def process_books_tab(sheets_service, range_name, book_type, ll_books, spreadsheet_id=None):
     links = get_google_sheets_data(sheets_service, range_name, spreadsheet_id)
     rows = []
@@ -370,7 +378,7 @@ def process_books_tab(sheets_service, range_name, book_type, ll_books, spreadshe
 
         rows.append([status, pub_date])
 
-    if rows and google_cfg.write_status:
+    if rows and google_cfg.write_status and _rows_changed(rows, links):
         update_sheet_statuses(sheets_service, rows, range_name, spreadsheet_id)
 
 
@@ -424,7 +432,7 @@ def process_media_tab(sheets_service, range_name, spreadsheet_id, url_type=None)
         else:
             rows.append(["", ""])
 
-    if rows and google_cfg.write_status:
+    if rows and google_cfg.write_status and _rows_changed(rows, links):
         update_sheet_statuses(sheets_service, rows, range_name, spreadsheet_id)
 
 
