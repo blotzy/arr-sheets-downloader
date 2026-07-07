@@ -240,6 +240,7 @@ def add_to_sonarr(tmdb_id):
             "tvdbId": int(show_data['tvdbId']),
             "rootFolderPath": sonarr_cfg.root_folder_path,
             "monitored": True,
+            "seasonFolder": True,
             "addOptions": {
                 "searchForMissingEpisodes": True
             }
